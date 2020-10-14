@@ -2,7 +2,7 @@
     "docsets_to_publish": [
       {
         "docset_name": "storage-java",
-        "build_source_folder": ".",
+        "build_source_folder": "storage-java",
         "build_output_subfolder": "storage-java",
         "locale": "en-us",
         "monikers": [],
