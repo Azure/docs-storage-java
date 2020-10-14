@@ -1,0 +1,15 @@
+- name: Azure
+  tocHref: /
+  topicHref: /azure
+  items:
+  - name: Developer
+    tocHref: /
+    topicHref: /azure/developer
+    items:
+    - name: Java
+      tocHref: /
+      topicHref: /azure/developer/java   
+      items:
+      - name: Java SDK
+        tocHref: /azure/developer/java/sdk/storage
+        topicHref: /azure/developer/java/sdk/storage/overview

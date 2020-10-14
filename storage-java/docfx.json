@@ -1,16 +1,147 @@
 {
-  "build": {
-    "content": [
-    ],
-    "resource": [
-    ],
-    "overwrite": [],
-    "externalReference": [],
-    "globalMetadata": {
-    },
-    "fileMetadata": {},
-    "template": [],
-    "dest": "archive-template",
-    "markdownEngineName": "markdig"
-  }
+    "build": {
+        "markdownEngineName": "markdig",
+        "content": [
+            
+            {
+                "files": [
+                    "**/*.md",
+                    "**/*.yml"
+                ],
+                "dest": "java/sdk/storage",
+                "group": "storagev12",
+                "src": "storagev12/docs-ref-autogen",
+                "exclude": [
+                    "**/obj/**",
+                    "**/includes/**",
+                    "README.md",
+                    "**/toc.md",
+                    "**/toc.yml",
+                    "LICENSE",
+                    "LICENSE-CODE",
+                    "ThirdPartyNotices"
+                ]
+            },
+            {
+                "files": [
+                    "**/*.md",
+                    "**/*.yml"
+                ],
+                "src": "docs-ref-services/storagev12",
+                "dest": "java/sdk/storage",
+                "version": "storagev12",
+                "group": "storagev12"
+            },
+            {
+                "files": [
+                    "**/toc.md",
+                    "**/toc.yml"
+                ],
+                "src": "storagev12/docs-ref-autogen",
+                "dest": "java/sdk/storage",
+                "group": "storagev12"
+            },
+            {
+                "files": [
+                    "**/*.yml"
+                ],
+                "src": "breadcrumb",
+                "group": "storagev12",
+                "dest": "storagev12_breadcrumb",
+                "exclude": [
+                    "**/obj/**",
+                    "**/includes/**"
+                ]
+            },
+            
+            {
+                "files": [
+                    "**/*.md",
+                    "**/*.yml"
+                ],
+                "dest": "java/sdk/storage",
+                "group": "storagev10",
+                "src": "storagev10/docs-ref-autogen",
+                "exclude": [
+                    "**/obj/**",
+                    "**/includes/**",
+                    "README.md",
+                    "**/toc.md",
+                    "**/toc.yml",
+                    "LICENSE",
+                    "LICENSE-CODE",
+                    "ThirdPartyNotices"
+                ]
+            },
+            {
+                "files": [
+                    "**/*.md",
+                    "**/*.yml"
+                ],
+                "src": "docs-ref-services/storagev10",
+                "dest": "java/sdk/storage",
+                "version": "storagev10",
+                "group": "storagev10"
+            },
+            {
+                "files": [
+                    "**/toc.md",
+                    "**/toc.yml"
+                ],
+                "src": "storagev10/docs-ref-autogen",
+                "dest": "java/sdk/storage",
+                "group": "storagev10"
+            },
+            {
+                "files": [
+                    "**/*.yml"
+                ],
+                "src": "breadcrumb",
+                "group": "storagev10",
+                "dest": "storagev10_breadcrumb",
+                "exclude": [
+                    "**/obj/**",
+                    "**/includes/**"
+                ]
+            }
+            
+
+        ],
+        "resource": [
+            {
+                "files": [
+                    "**/*.png",
+                    "**/*.jpg"
+                ],
+                "exclude": [
+                    "**/obj/**",
+                    "**/includes/**"
+                ]
+            }
+        ],
+        "overwrite": [],
+        "externalReference": [],
+        "globalMetadata": {
+            "breadcrumb_path": "~/breadcrumb/toc.yml"
+        },
+        "groups": {
+            
+            "storagev12": {
+                "dest": "storagev12",
+                "moniker_range": "storagev12"
+            }
+            ,
+            
+            "storagev10": {
+                "dest": "storagev10",
+                "moniker_range": "storagev10"
+            }
+            
+            
+        },
+        "fileMetadata": {},
+        "template": [],
+        "dest": "_site",
+        "apiPlatform": "java"
+    }
 }

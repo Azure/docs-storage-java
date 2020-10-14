@@ -1,0 +1,32 @@
+[
+    {
+        "language": "java",
+        "output_path": "storage-java/storagev12/docs-ref-autogen",
+        "packages": [
+            {
+                "packageDownloadUrl": "https://repo1.maven.org/maven2",
+                "packageGroupId": "com.azure",
+                "packageArtifactId": "azure-storage-blob",
+                "packageVersion": "12.8.0",
+                "inputPath": [],
+                "excludePath": [],
+                "excludepackages": "com.azure.storage.blob.implementation:com.azure.storage.blob.implementation.models:com.azure.storage.blob.implementation.util"
+            }
+        ]
+    },
+    {
+        "language": "java",
+        "output_path": "storage-java/storagev10/docs-ref-autogen",
+        "packages": [
+            {
+                "packageDownloadUrl": "https://repo1.maven.org/maven2",
+                "packageGroupId": "com.azure",
+                "packageArtifactId": "azure-storage-queue",
+                "packageVersion": "12.6.0",
+                "inputPath": [],
+                "excludePath": [],
+                "excludepackages": "com.azure.storage.queue.implementation:com.azure.storage.queue.implementation.util:com.azure.storage.queue.implementation:com.azure.storage.queue.implementation.models"
+            }
+        ]
+    }
+]
