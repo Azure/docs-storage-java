@@ -1,0 +1,759 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
+package com.azure.storage.blob.specialized;
+
+import com.azure.core.annotation.ServiceClient;
+import com.azure.core.http.HttpPipeline;
+import com.azure.core.http.rest.Response;
+import com.azure.core.http.rest.SimpleResponse;
+import com.azure.core.util.Context;
+import com.azure.core.util.FluxUtil;
+import com.azure.core.util.logging.ClientLogger;
+import com.azure.storage.blob.BlobAsyncClient;
+import com.azure.storage.blob.BlobServiceVersion;
+import com.azure.storage.blob.implementation.models.BlockBlobCommitBlockListHeaders;
+import com.azure.storage.blob.implementation.models.BlockBlobUploadHeaders;
+import com.azure.storage.blob.implementation.models.EncryptionScope;
+import com.azure.storage.blob.models.AccessTier;
+import com.azure.storage.blob.models.BlobHttpHeaders;
+import com.azure.storage.blob.models.BlobRange;
+import com.azure.storage.blob.models.BlobRequestConditions;
+import com.azure.storage.blob.options.BlockBlobCommitBlockListOptions;
+import com.azure.storage.blob.models.BlockBlobItem;
+import com.azure.storage.blob.options.BlockBlobListBlocksOptions;
+import com.azure.storage.blob.options.BlockBlobSimpleUploadOptions;
+import com.azure.storage.blob.models.BlockList;
+import com.azure.storage.blob.models.BlockListType;
+import com.azure.storage.blob.models.BlockLookupList;
+import com.azure.storage.blob.models.CpkInfo;
+import com.azure.storage.common.Utility;
+import com.azure.storage.common.implementation.Constants;
+import com.azure.storage.common.implementation.StorageImplUtils;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.nio.ByteBuffer;
+import java.util.List;
+import java.util.Map;
+
+import static com.azure.core.util.FluxUtil.monoError;
+import static com.azure.core.util.FluxUtil.withContext;
+import static com.azure.core.util.tracing.Tracer.AZ_TRACING_NAMESPACE_KEY;
+import static com.azure.storage.common.Utility.STORAGE_TRACING_NAMESPACE_VALUE;
+
+/**
+ * Client to a block blob. It may only be instantiated through a {@link SpecializedBlobClientBuilder} or via the method
+ * {@link BlobAsyncClient#getBlockBlobAsyncClient()}. This class does not hold any state about a particular blob, but is
+ * instead a convenient way of sending appropriate requests to the resource on the service.
+ *
+ * <p>
+ * Please refer to the
+ * <a href=https://docs.microsoft.com/en-us/rest/api/storageservices/understanding-block-blobs--append-blobs--and-page-blobs>Azure Docs</a> for more information.
+ *
+ * <p>
+ * Note this client is an async client that returns reactive responses from Spring Reactor Core project
+ * (https://projectreactor.io/). Calling the methods in this client will <strong>NOT</strong> start the actual network
+ * operation, until {@code .subscribe()} is called on the reactive response. You can simply convert one of these
+ * responses to a {@link java.util.concurrent.CompletableFuture} object through {@link Mono#toFuture()}.
+ */
+@ServiceClient(builder = SpecializedBlobClientBuilder.class, isAsync = true)
+public final class BlockBlobAsyncClient extends BlobAsyncClientBase {
+    private final ClientLogger logger = new ClientLogger(BlockBlobAsyncClient.class);
+
+    /**
+     * Indicates the maximum number of bytes that can be sent in a call to upload.
+     * @deprecated Use {@link #MAX_STAGE_BLOCK_BYTES_LONG}
+     */
+    @Deprecated
+    public static final int MAX_UPLOAD_BLOB_BYTES = 256 * Constants.MB;
+
+    /**
+     * Indicates the maximum number of bytes that can be sent in a call to upload.
+     */
+    public static final long MAX_UPLOAD_BLOB_BYTES_LONG = 5000L * Constants.MB;
+
+    /**
+     * Indicates the maximum number of bytes that can be sent in a call to stageBlock.
+     * @deprecated Use {@link #MAX_STAGE_BLOCK_BYTES_LONG}
+     */
+    @Deprecated
+    public static final int MAX_STAGE_BLOCK_BYTES = 100 * Constants.MB;
+
+    /**
+     * Indicates the maximum number of bytes that can be sent in a call to stageBlock.
+     */
+    public static final long MAX_STAGE_BLOCK_BYTES_LONG = 4000L * Constants.MB;
+
+    /**
+     * Indicates the maximum number of blocks allowed in a block blob.
+     */
+    public static final int MAX_BLOCKS = 50000;
+
+    /**
+     * Package-private constructor for use by {@link SpecializedBlobClientBuilder}.
+     *
+     * @param pipeline The pipeline used to send and receive service requests.
+     * @param url The endpoint where to send service requests.
+     * @param serviceVersion The version of the service to receive requests.
+     * @param accountName The storage account name.
+     * @param containerName The container name.
+     * @param blobName The blob name.
+     * @param snapshot The snapshot identifier for the blob, pass {@code null} to interact with the blob directly.
+     * @param customerProvidedKey Customer provided key used during encryption of the blob's data on the server, pass
+     * {@code null} to allow the service to use its own encryption.
+     * @param encryptionScope Encryption scope used during encryption of the blob's data on the server, pass
+     * {@code null} to allow the service to use its own encryption.
+     * @param versionId The version identifier for the blob, pass {@code null} to interact with the latest blob version.
+     */
+    BlockBlobAsyncClient(HttpPipeline pipeline, String url, BlobServiceVersion serviceVersion,
+        String accountName, String containerName, String blobName, String snapshot, CpkInfo customerProvidedKey,
+        EncryptionScope encryptionScope, String versionId) {
+        super(pipeline, url, serviceVersion, accountName, containerName, blobName, snapshot, customerProvidedKey,
+            encryptionScope, versionId);
+    }
+
+    /**
+     * Creates a new block blob. By default this method will not overwrite an existing blob. Updating an existing block
+     * blob overwrites any existing metadata on the blob. Partial updates are not supported with PutBlob; the content
+     * of the existing blob is overwritten with the new content. To perform a partial update of a block blob's, use
+     * PutBlock and PutBlockList. For more information, see the
+     * <a href="https://docs.microsoft.com/rest/api/storageservices/put-blob">Azure Docs</a>.
+     * <p>
+     * Note that the data passed must be replayable if retries are enabled (the default). In other words, the
+     * {@code Flux} must produce the same data each time it is subscribed to.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * client.upload&#40;data, length&#41;.subscribe&#40;response -&gt;
+     *     System.out.printf&#40;&quot;Uploaded BlockBlob MD5 is %s%n&quot;,
+     *         Base64.getEncoder&#40;&#41;.encodeToString&#40;response.getContentMd5&#40;&#41;&#41;&#41;&#41;;
+     * </pre>
+     *
+     * @param data The data to write to the blob. Note that this {@code Flux} must be replayable if retries are enabled
+     * (the default). In other words, the Flux must produce the same data each time it is subscribed to.
+     * @param length The exact length of the data. It is important that this value match precisely the length of the
+     * data emitted by the {@code Flux}.
+     * @return A reactive response containing the information of the uploaded block blob.
+     */
+    public Mono<BlockBlobItem> upload(Flux<ByteBuffer> data, long length) {
+        try {
+            return upload(data, length, false);
+        } catch (RuntimeException ex) {
+            return monoError(logger, ex);
+        }
+    }
+
+    /**
+     * Creates a new block blob, or updates the content of an existing block blob. Updating an existing block blob
+     * overwrites any existing metadata on the blob. Partial updates are not supported with PutBlob; the content of the
+     * existing blob is overwritten with the new content. To perform a partial update of a block blob's, use PutBlock
+     * and PutBlockList. For more information, see the
+     * <a href="https://docs.microsoft.com/rest/api/storageservices/put-blob">Azure Docs</a>.
+     * <p>
+     * Note that the data passed must be replayable if retries are enabled (the default). In other words, the
+     * {@code Flux} must produce the same data each time it is subscribed to.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * boolean overwrite = false; &#47;&#47; Default behavior
+     * client.upload&#40;data, length, overwrite&#41;.subscribe&#40;response -&gt;
+     *     System.out.printf&#40;&quot;Uploaded BlockBlob MD5 is %s%n&quot;,
+     *         Base64.getEncoder&#40;&#41;.encodeToString&#40;response.getContentMd5&#40;&#41;&#41;&#41;&#41;;
+     * </pre>
+     *
+     * @param data The data to write to the blob. Note that this {@code Flux} must be replayable if retries are enabled
+     * (the default). In other words, the Flux must produce the same data each time it is subscribed to.
+     * @param length The exact length of the data. It is important that this value match precisely the length of the
+     * data emitted by the {@code Flux}.
+     * @param overwrite Whether or not to overwrite, should data exist on the blob.
+     * @return A reactive response containing the information of the uploaded block blob.
+     */
+    public Mono<BlockBlobItem> upload(Flux<ByteBuffer> data, long length, boolean overwrite) {
+        try {
+            BlobRequestConditions blobRequestConditions = new BlobRequestConditions();
+            if (!overwrite) {
+                blobRequestConditions.setIfNoneMatch(Constants.HeaderConstants.ETAG_WILDCARD);
+            }
+            return uploadWithResponse(data, length, null, null, null, null, blobRequestConditions)
+                .flatMap(FluxUtil::toMono);
+        } catch (RuntimeException ex) {
+            return monoError(logger, ex);
+        }
+    }
+
+    /**
+     * Creates a new block blob, or updates the content of an existing block blob.
+     * <p>
+     * Updating an existing block blob overwrites any existing metadata on the blob. Partial updates are not supported
+     * with PutBlob; the content of the existing blob is overwritten with the new content. To perform a partial update
+     * of a block blob's, use PutBlock and PutBlockList. For more information, see the
+     * <a href="https://docs.microsoft.com/rest/api/storageservices/put-blob">Azure Docs</a>.
+     * <p>
+     * Note that the data passed must be replayable if retries are enabled (the default). In other words, the
+     * {@code Flux} must produce the same data each time it is subscribed to.
+     * <p>
+     * To avoid overwriting, pass "*" to {@link BlobRequestConditions#setIfNoneMatch(String)}.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * BlobHttpHeaders headers = new BlobHttpHeaders&#40;&#41;
+     *     .setContentMd5&#40;&quot;data&quot;.getBytes&#40;StandardCharsets.UTF_8&#41;&#41;
+     *     .setContentLanguage&#40;&quot;en-US&quot;&#41;
+     *     .setContentType&#40;&quot;binary&quot;&#41;;
+     * 
+     * Map&lt;String, String&gt; metadata = Collections.singletonMap&#40;&quot;metadata&quot;, &quot;value&quot;&#41;;
+     * byte[] md5 = MessageDigest.getInstance&#40;&quot;MD5&quot;&#41;.digest&#40;&quot;data&quot;.getBytes&#40;StandardCharsets.UTF_8&#41;&#41;;
+     * BlobRequestConditions requestConditions = new BlobRequestConditions&#40;&#41;
+     *     .setLeaseId&#40;leaseId&#41;
+     *     .setIfUnmodifiedSince&#40;OffsetDateTime.now&#40;&#41;.minusDays&#40;3&#41;&#41;;
+     * 
+     * client.uploadWithResponse&#40;data, length, headers, metadata, AccessTier.HOT, md5, requestConditions&#41;
+     *     .subscribe&#40;response -&gt; System.out.printf&#40;&quot;Uploaded BlockBlob MD5 is %s%n&quot;,
+     *         Base64.getEncoder&#40;&#41;.encodeToString&#40;response.getValue&#40;&#41;.getContentMd5&#40;&#41;&#41;&#41;&#41;;
+     * </pre>
+     *
+     * @param data The data to write to the blob. Note that this {@code Flux} must be replayable if retries are enabled
+     * (the default). In other words, the Flux must produce the same data each time it is subscribed to.
+     * @param length The exact length of the data. It is important that this value match precisely the length of the
+     * data emitted by the {@code Flux}.
+     * @param headers {@link BlobHttpHeaders}
+     * @param metadata Metadata to associate with the blob.
+     * @param tier {@link AccessTier} for the destination blob.
+     * @param contentMd5 An MD5 hash of the blob content. This hash is used to verify the integrity of the blob during
+     * transport. When this header is specified, the storage service compares the hash of the content that has arrived
+     * with this header value. Note that this MD5 hash is not stored with the blob. If the two hashes do not match, the
+     * operation will fail.
+     * @param requestConditions {@link BlobRequestConditions}
+     * @return A reactive response containing the information of the uploaded block blob.
+     */
+    public Mono<Response<BlockBlobItem>> uploadWithResponse(Flux<ByteBuffer> data, long length, BlobHttpHeaders headers,
+        Map<String, String> metadata, AccessTier tier, byte[] contentMd5, BlobRequestConditions requestConditions) {
+        return this.uploadWithResponse(new BlockBlobSimpleUploadOptions(data, length).setHeaders(headers)
+            .setMetadata(metadata).setTier(tier).setContentMd5(contentMd5).setRequestConditions(requestConditions));
+    }
+
+    /**
+     * Creates a new block blob, or updates the content of an existing block blob.
+     * <p>
+     * Updating an existing block blob overwrites any existing metadata on the blob. Partial updates are not supported
+     * with PutBlob; the content of the existing blob is overwritten with the new content. To perform a partial update
+     * of a block blob's, use PutBlock and PutBlockList. For more information, see the
+     * <a href="https://docs.microsoft.com/rest/api/storageservices/put-blob">Azure Docs</a>.
+     * <p>
+     * Note that the data passed must be replayable if retries are enabled (the default). In other words, the
+     * {@code Flux} must produce the same data each time it is subscribed to.
+     * <p>
+     * To avoid overwriting, pass "*" to {@link BlobRequestConditions#setIfNoneMatch(String)}.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * BlobHttpHeaders headers = new BlobHttpHeaders&#40;&#41;
+     *     .setContentMd5&#40;&quot;data&quot;.getBytes&#40;StandardCharsets.UTF_8&#41;&#41;
+     *     .setContentLanguage&#40;&quot;en-US&quot;&#41;
+     *     .setContentType&#40;&quot;binary&quot;&#41;;
+     * 
+     * Map&lt;String, String&gt; metadata = Collections.singletonMap&#40;&quot;metadata&quot;, &quot;value&quot;&#41;;
+     * Map&lt;String, String&gt; tags = Collections.singletonMap&#40;&quot;tag&quot;, &quot;value&quot;&#41;;
+     * byte[] md5 = MessageDigest.getInstance&#40;&quot;MD5&quot;&#41;.digest&#40;&quot;data&quot;.getBytes&#40;StandardCharsets.UTF_8&#41;&#41;;
+     * BlobRequestConditions requestConditions = new BlobRequestConditions&#40;&#41;
+     *     .setLeaseId&#40;leaseId&#41;
+     *     .setIfUnmodifiedSince&#40;OffsetDateTime.now&#40;&#41;.minusDays&#40;3&#41;&#41;;
+     * 
+     * client.uploadWithResponse&#40;new BlockBlobSimpleUploadOptions&#40;data, length&#41;.setHeaders&#40;headers&#41;
+     *     .setMetadata&#40;metadata&#41;.setTags&#40;tags&#41;.setTier&#40;AccessTier.HOT&#41;.setContentMd5&#40;md5&#41;
+     *     .setRequestConditions&#40;requestConditions&#41;&#41;
+     *     .subscribe&#40;response -&gt; System.out.printf&#40;&quot;Uploaded BlockBlob MD5 is %s%n&quot;,
+     *         Base64.getEncoder&#40;&#41;.encodeToString&#40;response.getValue&#40;&#41;.getContentMd5&#40;&#41;&#41;&#41;&#41;;
+     * </pre>
+     *
+     * @param options {@link BlockBlobSimpleUploadOptions}
+     * @return A reactive response containing the information of the uploaded block blob.
+     */
+    public Mono<Response<BlockBlobItem>> uploadWithResponse(
+        BlockBlobSimpleUploadOptions options) {
+        try {
+            return withContext(context -> uploadWithResponse(options, context));
+        } catch (RuntimeException ex) {
+            return monoError(logger, ex);
+        }
+    }
+
+    Mono<Response<BlockBlobItem>> uploadWithResponse(BlockBlobSimpleUploadOptions options, Context context) {
+        StorageImplUtils.assertNotNull("options", options);
+        Flux<ByteBuffer> data = options.getDataFlux() == null ? Utility.convertStreamToByteBuffer(
+            options.getDataStream(), options.getLength(), BlobAsyncClient.BLOB_DEFAULT_UPLOAD_BLOCK_SIZE)
+            .subscribeOn(Schedulers.elastic())
+            : options.getDataFlux();
+        BlobRequestConditions requestConditions = options.getRequestConditions() == null ? new BlobRequestConditions()
+            : options.getRequestConditions();
+        context = context == null ? Context.NONE : context;
+
+        return this.azureBlobStorage.blockBlobs().uploadWithRestResponseAsync(null,
+            null, data, options.getLength(), null, options.getContentMd5(), options.getMetadata(),
+            requestConditions.getLeaseId(), options.getTier(), requestConditions.getIfModifiedSince(),
+            requestConditions.getIfUnmodifiedSince(), requestConditions.getIfMatch(),
+            requestConditions.getIfNoneMatch(), requestConditions.getTagsConditions(), null,
+            tagsToString(options.getTags()), options.getHeaders(), getCustomerProvidedKey(), encryptionScope,
+            context.addData(AZ_TRACING_NAMESPACE_KEY, STORAGE_TRACING_NAMESPACE_VALUE))
+            .map(rb -> {
+                BlockBlobUploadHeaders hd = rb.getDeserializedHeaders();
+                BlockBlobItem item = new BlockBlobItem(hd.getETag(), hd.getLastModified(), hd.getContentMD5(),
+                    hd.isServerEncrypted(), hd.getEncryptionKeySha256(), hd.getEncryptionScope(),
+                    hd.getVersionId());
+                return new SimpleResponse<>(rb, item);
+            });
+    }
+
+    /**
+     * Uploads the specified block to the block blob's "staging area" to be later committed by a call to
+     * commitBlockList. For more information, see the
+     * <a href="https://docs.microsoft.com/rest/api/storageservices/put-block">Azure Docs</a>.
+     * <p>
+     * Note that the data passed must be replayable if retries are enabled (the default). In other words, the
+     *
+     * @param base64BlockId A Base64 encoded {@code String} that specifies the ID for this block. Note that all block
+     * ids for a given blob must be the same length.
+     * @param data The data to write to the block. Note that this {@code Flux} must be replayable if retries are enabled
+     * (the default). In other words, the {@code Flux} must produce the same data each time it is subscribed to.
+     * @param length The exact length of the data. It is important that this value match precisely the length of the
+     * data emitted by the {@code Flux}.
+     *
+     * @return A reactive response signalling completion.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * client.stageBlock&#40;base64BlockID, data, length&#41;
+     *     .subscribe&#40;
+     *         response -&gt; System.out.println&#40;&quot;Staging block completed&quot;&#41;,
+     *         error -&gt; System.out.printf&#40;&quot;Error when calling stage Block: %s&quot;, error&#41;&#41;;
+     * </pre>
+     */
+    public Mono<Void> stageBlock(String base64BlockId, Flux<ByteBuffer> data, long length) {
+        try {
+            return stageBlockWithResponse(base64BlockId, data, length, null, null).flatMap(FluxUtil::toMono);
+        } catch (RuntimeException ex) {
+            return monoError(logger, ex);
+        }
+    }
+
+    /**
+     * Uploads the specified block to the block blob's "staging area" to be later committed by a call to
+     * commitBlockList. For more information, see the
+     * <a href="https://docs.microsoft.com/rest/api/storageservices/put-block">Azure Docs</a>.
+     * <p>
+     * Note that the data passed must be replayable if retries are enabled (the default). In other words, the
+     * {@code Flux} must produce the same data each time it is subscribed to.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * client.stageBlockWithResponse&#40;base64BlockID, data, length, md5, leaseId&#41;.subscribe&#40;response -&gt;
+     *     System.out.printf&#40;&quot;Staging block completed with status %d%n&quot;, response.getStatusCode&#40;&#41;&#41;&#41;;
+     * </pre>
+     *
+     * @param base64BlockId A Base64 encoded {@code String} that specifies the ID for this block. Note that all block
+     * ids for a given blob must be the same length.
+     * @param data The data to write to the block. Note that this {@code Flux} must be replayable if retries are enabled
+     * (the default). In other words, the Flux must produce the same data each time it is subscribed to.
+     * @param length The exact length of the data. It is important that this value match precisely the length of the
+     * data emitted by the {@code Flux}.
+     * @param contentMd5 An MD5 hash of the block content. This hash is used to verify the integrity of the block during
+     * transport. When this header is specified, the storage service compares the hash of the content that has arrived
+     * with this header value. Note that this MD5 hash is not stored with the blob. If the two hashes do not match, the
+     * operation will fail.
+     * @param leaseId The lease ID the active lease on the blob must match.
+     *
+     * @return A reactive response signalling completion.
+     */
+    public Mono<Response<Void>> stageBlockWithResponse(String base64BlockId, Flux<ByteBuffer> data, long length,
+        byte[] contentMd5, String leaseId) {
+        try {
+            return withContext(context -> stageBlockWithResponse(base64BlockId, data, length,
+                contentMd5, leaseId, context));
+        } catch (RuntimeException ex) {
+            return monoError(logger, ex);
+        }
+    }
+
+    Mono<Response<Void>> stageBlockWithResponse(String base64BlockId, Flux<ByteBuffer> data, long length,
+        byte[] contentMd5, String leaseId, Context context) {
+        context = context == null ? Context.NONE : context;
+        return this.azureBlobStorage.blockBlobs().stageBlockWithRestResponseAsync(null, null,
+            base64BlockId, length, data, contentMd5, null, null, leaseId, null, getCustomerProvidedKey(),
+            encryptionScope, context.addData(AZ_TRACING_NAMESPACE_KEY, STORAGE_TRACING_NAMESPACE_VALUE))
+            .map(response -> new SimpleResponse<>(response, null));
+    }
+
+    /**
+     * Creates a new block to be committed as part of a blob where the contents are read from a URL. For more
+     * information, see the <a href="https://docs.microsoft.com/en-us/rest/api/storageservices/put-block-from-url">Azure
+     * Docs</a>.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * client.stageBlockFromUrl&#40;base64BlockID, sourceUrl, new BlobRange&#40;offset, count&#41;&#41;
+     *     .subscribe&#40;
+     *         response -&gt; System.out.println&#40;&quot;Staging block completed&quot;&#41;,
+     *         error -&gt; System.out.printf&#40;&quot;Error when calling stage Block: %s&quot;, error&#41;&#41;;
+     * </pre>
+     *
+     * @param base64BlockId A Base64 encoded {@code String} that specifies the ID for this block. Note that all block
+     * ids for a given blob must be the same length.
+     * @param sourceUrl The url to the blob that will be the source of the copy.  A source blob in the same storage
+     * account can be authenticated via Shared Key. However, if the source is a blob in another account, the source blob
+     * must either be public or must be authenticated via a shared access signature. If the source blob is public, no
+     * authentication is required to perform the operation.
+     * @param sourceRange {@link BlobRange}
+     *
+     * @return A reactive response signalling completion.
+     */
+    public Mono<Void> stageBlockFromUrl(String base64BlockId, String sourceUrl, BlobRange sourceRange) {
+        try {
+            return this.stageBlockFromUrlWithResponse(base64BlockId, sourceUrl, sourceRange, null, null, null)
+                .flatMap(FluxUtil::toMono);
+        } catch (RuntimeException ex) {
+            return monoError(logger, ex);
+        }
+    }
+
+    /**
+     * Creates a new block to be committed as part of a blob where the contents are read from a URL. For more
+     * information, see the <a href="https://docs.microsoft.com/rest/api/storageservices/put-block-from-url">Azure
+     * Docs</a>.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * BlobRequestConditions sourceRequestConditions = new BlobRequestConditions&#40;&#41;
+     *     .setIfUnmodifiedSince&#40;OffsetDateTime.now&#40;&#41;.minusDays&#40;3&#41;&#41;;
+     * 
+     * client.stageBlockFromUrlWithResponse&#40;base64BlockID, sourceUrl, new BlobRange&#40;offset, count&#41;, null,
+     *     leaseId, sourceRequestConditions&#41;.subscribe&#40;response -&gt;
+     *     System.out.printf&#40;&quot;Staging block from URL completed with status %d%n&quot;, response.getStatusCode&#40;&#41;&#41;&#41;;
+     * </pre>
+     *
+     * @param base64BlockId A Base64 encoded {@code String} that specifies the ID for this block. Note that all block
+     * ids for a given blob must be the same length.
+     * @param sourceUrl The url to the blob that will be the source of the copy.  A source blob in the same storage
+     * account can be authenticated via Shared Key. However, if the source is a blob in another account, the source blob
+     * must either be public or must be authenticated via a shared access signature. If the source blob is public, no
+     * authentication is required to perform the operation.
+     * @param sourceRange {@link BlobRange}
+     * @param sourceContentMd5 An MD5 hash of the block content. This hash is used to verify the integrity of the block
+     * during transport. When this header is specified, the storage service compares the hash of the content that has
+     * arrived with this header value. Note that this MD5 hash is not stored with the blob. If the two hashes do not
+     * match, the operation will fail.
+     * @param leaseId The lease ID that the active lease on the blob must match.
+     * @param sourceRequestConditions {@link BlobRequestConditions}
+     * @return A reactive response signalling completion.
+     */
+    public Mono<Response<Void>> stageBlockFromUrlWithResponse(String base64BlockId, String sourceUrl,
+        BlobRange sourceRange, byte[] sourceContentMd5, String leaseId, BlobRequestConditions sourceRequestConditions) {
+        try {
+            return withContext(context -> stageBlockFromUrlWithResponse(base64BlockId, sourceUrl,
+                sourceRange, sourceContentMd5, leaseId, sourceRequestConditions, context));
+        } catch (RuntimeException ex) {
+            return monoError(logger, ex);
+        }
+    }
+
+    Mono<Response<Void>> stageBlockFromUrlWithResponse(String base64BlockId, String sourceUrl, BlobRange sourceRange,
+        byte[] sourceContentMd5, String leaseId, BlobRequestConditions sourceRequestConditions, Context context) {
+        sourceRange = (sourceRange == null) ? new BlobRange(0) : sourceRange;
+        sourceRequestConditions = (sourceRequestConditions == null)
+            ? new BlobRequestConditions() : sourceRequestConditions;
+
+        URL url;
+        try {
+            url = new URL(sourceUrl);
+        } catch (MalformedURLException ex) {
+            throw logger.logExceptionAsError(new IllegalArgumentException("'sourceUrl' is not a valid url."));
+        }
+        context = context == null ? Context.NONE : context;
+
+        return this.azureBlobStorage.blockBlobs().stageBlockFromURLWithRestResponseAsync(null, null, base64BlockId, 0,
+            url, sourceRange.toHeaderValue(), sourceContentMd5, null, null, leaseId,
+            sourceRequestConditions.getIfModifiedSince(), sourceRequestConditions.getIfUnmodifiedSince(),
+            sourceRequestConditions.getIfMatch(), sourceRequestConditions.getIfNoneMatch(), null,
+            getCustomerProvidedKey(), encryptionScope,
+            context.addData(AZ_TRACING_NAMESPACE_KEY, STORAGE_TRACING_NAMESPACE_VALUE))
+            .map(response -> new SimpleResponse<>(response, null));
+    }
+
+    /**
+     * Returns the list of blocks that have been uploaded as part of a block blob using the specified block list filter.
+     * For more information, see the
+     * <a href="https://docs.microsoft.com/rest/api/storageservices/get-block-list">Azure Docs</a>.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * client.listBlocks&#40;BlockListType.ALL&#41;.subscribe&#40;block -&gt; &#123;
+     *     System.out.println&#40;&quot;Committed Blocks:&quot;&#41;;
+     *     block.getCommittedBlocks&#40;&#41;.forEach&#40;b -&gt; System.out.printf&#40;&quot;Name: %s, Size: %d&quot;, b.getName&#40;&#41;, b.getSize&#40;&#41;&#41;&#41;;
+     * 
+     *     System.out.println&#40;&quot;Uncommitted Blocks:&quot;&#41;;
+     *     block.getUncommittedBlocks&#40;&#41;.forEach&#40;b -&gt; System.out.printf&#40;&quot;Name: %s, Size: %d&quot;, b.getName&#40;&#41;, b.getSize&#40;&#41;&#41;&#41;;
+     * &#125;&#41;;
+     * </pre>
+     *
+     * @param listType Specifies which type of blocks to return.
+     *
+     * @return A reactive response containing the list of blocks.
+     */
+    public Mono<BlockList> listBlocks(BlockListType listType) {
+        try {
+            return this.listBlocksWithResponse(listType, null).map(Response::getValue);
+        } catch (RuntimeException ex) {
+            return monoError(logger, ex);
+        }
+    }
+
+    /**
+     * Returns the list of blocks that have been uploaded as part of a block blob using the specified block list
+     * filter.
+     * For more information, see the
+     * <a href="https://docs.microsoft.com/rest/api/storageservices/get-block-list">Azure Docs</a>.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * client.listBlocksWithResponse&#40;BlockListType.ALL, leaseId&#41;.subscribe&#40;response -&gt; &#123;
+     *     BlockList block = response.getValue&#40;&#41;;
+     *     System.out.println&#40;&quot;Committed Blocks:&quot;&#41;;
+     *     block.getCommittedBlocks&#40;&#41;.forEach&#40;b -&gt; System.out.printf&#40;&quot;Name: %s, Size: %d&quot;, b.getName&#40;&#41;, b.getSize&#40;&#41;&#41;&#41;;
+     * 
+     *     System.out.println&#40;&quot;Uncommitted Blocks:&quot;&#41;;
+     *     block.getUncommittedBlocks&#40;&#41;.forEach&#40;b -&gt; System.out.printf&#40;&quot;Name: %s, Size: %d&quot;, b.getName&#40;&#41;, b.getSize&#40;&#41;&#41;&#41;;
+     * &#125;&#41;;
+     * </pre>
+     *
+     * @param listType Specifies which type of blocks to return.
+     * @param leaseId The lease ID the active lease on the blob must match.
+     * @return A reactive response containing the list of blocks.
+     */
+    public Mono<Response<BlockList>> listBlocksWithResponse(BlockListType listType, String leaseId) {
+        try {
+            return this.listBlocksWithResponse(new BlockBlobListBlocksOptions(listType).setLeaseId(leaseId));
+        } catch (RuntimeException ex) {
+            return monoError(logger, ex);
+        }
+    }
+
+    /**
+     * Returns the list of blocks that have been uploaded as part of a block blob using the specified block list
+     * filter.
+     * For more information, see the
+     * <a href="https://docs.microsoft.com/rest/api/storageservices/get-block-list">Azure Docs</a>.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * client.listBlocksWithResponse&#40;new BlockBlobListBlocksOptions&#40;BlockListType.ALL&#41;
+     *     .setLeaseId&#40;leaseId&#41;
+     *     .setIfTagsMatch&#40;tags&#41;&#41;.subscribe&#40;response -&gt; &#123;
+     *         BlockList block = response.getValue&#40;&#41;;
+     *         System.out.println&#40;&quot;Committed Blocks:&quot;&#41;;
+     *         block.getCommittedBlocks&#40;&#41;.forEach&#40;b -&gt; System.out.printf&#40;&quot;Name: %s, Size: %d&quot;, b.getName&#40;&#41;,
+     *             b.getSizeLong&#40;&#41;&#41;&#41;;
+     * 
+     *         System.out.println&#40;&quot;Uncommitted Blocks:&quot;&#41;;
+     *         block.getUncommittedBlocks&#40;&#41;.forEach&#40;b -&gt; System.out.printf&#40;&quot;Name: %s, Size: %d&quot;, b.getName&#40;&#41;,
+     *             b.getSizeLong&#40;&#41;&#41;&#41;;
+     *     &#125;&#41;;
+     * </pre>
+     *
+     * @param options {@link BlockBlobListBlocksOptions}
+     * @return A reactive response containing the list of blocks.
+     */
+    public Mono<Response<BlockList>> listBlocksWithResponse(BlockBlobListBlocksOptions options) {
+        try {
+            return withContext(context -> listBlocksWithResponse(options, context));
+        } catch (RuntimeException ex) {
+            return monoError(logger, ex);
+        }
+    }
+
+    Mono<Response<BlockList>> listBlocksWithResponse(BlockBlobListBlocksOptions options, Context context) {
+        StorageImplUtils.assertNotNull("options", options);
+
+        return this.azureBlobStorage.blockBlobs().getBlockListWithRestResponseAsync(
+            null, null, options.getType(), getSnapshotId(), null, options.getLeaseId(),
+            options.getIfTagsMatch(), null, context)
+            .map(response -> new SimpleResponse<>(response, response.getValue()));
+    }
+
+    /**
+     * Writes a blob by specifying the list of block IDs that are to make up the blob. In order to be written as part of
+     * a blob, a block must have been successfully written to the server in a prior stageBlock operation. You can call
+     * commitBlockList to update a blob by uploading only those blocks that have changed, then committing the new and
+     * existing blocks together. Any blocks not specified in the block list and permanently deleted. For more
+     * information, see the
+     * <a href="https://docs.microsoft.com/rest/api/storageservices/put-block-list">Azure Docs</a>.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * client.commitBlockList&#40;Collections.singletonList&#40;base64BlockID&#41;&#41;.subscribe&#40;response -&gt;
+     *     System.out.printf&#40;&quot;Committing block list completed. Last modified: %s%n&quot;, response.getLastModified&#40;&#41;&#41;&#41;;
+     * </pre>
+     *
+     * @param base64BlockIds A list of base64 encode {@code String}s that specifies the block IDs to be committed.
+     * @return A reactive response containing the information of the block blob.
+     */
+    public Mono<BlockBlobItem> commitBlockList(List<String> base64BlockIds) {
+        try {
+            return commitBlockList(base64BlockIds, false);
+        } catch (RuntimeException ex) {
+            return monoError(logger, ex);
+        }
+    }
+
+    /**
+     * Writes a blob by specifying the list of block IDs that are to make up the blob. In order to be written as part of
+     * a blob, a block must have been successfully written to the server in a prior stageBlock operation. You can call
+     * commitBlockList to update a blob by uploading only those blocks that have changed, then committing the new and
+     * existing blocks together. Any blocks not specified in the block list and permanently deleted. For more
+     * information, see the
+     * <a href="https://docs.microsoft.com/rest/api/storageservices/put-block-list">Azure Docs</a>.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * boolean overwrite = false; &#47;&#47; Default behavior
+     * client.commitBlockList&#40;Collections.singletonList&#40;base64BlockID&#41;, overwrite&#41;.subscribe&#40;response -&gt;
+     *     System.out.printf&#40;&quot;Committing block list completed. Last modified: %s%n&quot;, response.getLastModified&#40;&#41;&#41;&#41;;
+     * </pre>
+     *
+     * @param base64BlockIds A list of base64 encode {@code String}s that specifies the block IDs to be committed.
+     * @param overwrite Whether or not to overwrite, should data exist on the blob.
+     * @return A reactive response containing the information of the block blob.
+     */
+    public Mono<BlockBlobItem> commitBlockList(List<String> base64BlockIds, boolean overwrite) {
+        try {
+            BlobRequestConditions requestConditions = null;
+            if (!overwrite) {
+                requestConditions = new BlobRequestConditions().setIfNoneMatch(Constants.HeaderConstants.ETAG_WILDCARD);
+            }
+            return commitBlockListWithResponse(base64BlockIds, null, null, null, requestConditions)
+                .flatMap(FluxUtil::toMono);
+        } catch (RuntimeException ex) {
+            return monoError(logger, ex);
+        }
+    }
+
+    /**
+     * Writes a blob by specifying the list of block IDs that are to make up the blob. In order to be written as part
+     * of a blob, a block must have been successfully written to the server in a prior stageBlock operation. You can
+     * call commitBlockList to update a blob by uploading only those blocks that have changed, then committing the new
+     * and existing blocks together. Any blocks not specified in the block list and permanently deleted. For more
+     * information, see the
+     * <a href="https://docs.microsoft.com/rest/api/storageservices/put-block-list">Azure Docs</a>.
+     * <p>
+     * To avoid overwriting, pass "*" to {@link BlobRequestConditions#setIfNoneMatch(String)}.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * BlobHttpHeaders headers = new BlobHttpHeaders&#40;&#41;
+     *     .setContentMd5&#40;&quot;data&quot;.getBytes&#40;StandardCharsets.UTF_8&#41;&#41;
+     *     .setContentLanguage&#40;&quot;en-US&quot;&#41;
+     *     .setContentType&#40;&quot;binary&quot;&#41;;
+     * 
+     * Map&lt;String, String&gt; metadata = Collections.singletonMap&#40;&quot;metadata&quot;, &quot;value&quot;&#41;;
+     * BlobRequestConditions requestConditions = new BlobRequestConditions&#40;&#41;
+     *     .setLeaseId&#40;leaseId&#41;
+     *     .setIfUnmodifiedSince&#40;OffsetDateTime.now&#40;&#41;.minusDays&#40;3&#41;&#41;;
+     * client.commitBlockListWithResponse&#40;Collections.singletonList&#40;base64BlockID&#41;, headers, metadata,
+     *     AccessTier.HOT, requestConditions&#41;.subscribe&#40;response -&gt;
+     *         System.out.printf&#40;&quot;Committing block list completed with status %d%n&quot;, response.getStatusCode&#40;&#41;&#41;&#41;;
+     * </pre>
+     *
+     * @param base64BlockIds A list of base64 encode {@code String}s that specifies the block IDs to be committed.
+     * @param headers {@link BlobHttpHeaders}
+     * @param metadata Metadata to associate with the blob.
+     * @param tier {@link AccessTier} for the destination blob.
+     * @param requestConditions {@link BlobRequestConditions}
+     * @return A reactive response containing the information of the block blob.
+     */
+    public Mono<Response<BlockBlobItem>> commitBlockListWithResponse(List<String> base64BlockIds,
+            BlobHttpHeaders headers, Map<String, String> metadata, AccessTier tier,
+            BlobRequestConditions requestConditions) {
+        return this.commitBlockListWithResponse(new BlockBlobCommitBlockListOptions(base64BlockIds)
+            .setHeaders(headers).setMetadata(metadata).setTier(tier).setRequestConditions(requestConditions));
+    }
+
+    /**
+     * Writes a blob by specifying the list of block IDs that are to make up the blob. In order to be written as part
+     * of a blob, a block must have been successfully written to the server in a prior stageBlock operation. You can
+     * call commitBlockList to update a blob by uploading only those blocks that have changed, then committing the new
+     * and existing blocks together. Any blocks not specified in the block list and permanently deleted. For more
+     * information, see the
+     * <a href="https://docs.microsoft.com/rest/api/storageservices/put-block-list">Azure Docs</a>.
+     * <p>
+     * To avoid overwriting, pass "*" to {@link BlobRequestConditions#setIfNoneMatch(String)}.
+     *
+     * <p><strong>Code Samples</strong></p>
+     *
+     * <pre>
+     * BlobHttpHeaders headers = new BlobHttpHeaders&#40;&#41;
+     *     .setContentMd5&#40;&quot;data&quot;.getBytes&#40;StandardCharsets.UTF_8&#41;&#41;
+     *     .setContentLanguage&#40;&quot;en-US&quot;&#41;
+     *     .setContentType&#40;&quot;binary&quot;&#41;;
+     * 
+     * Map&lt;String, String&gt; metadata = Collections.singletonMap&#40;&quot;metadata&quot;, &quot;value&quot;&#41;;
+     * Map&lt;String, String&gt; tags = Collections.singletonMap&#40;&quot;tag&quot;, &quot;value&quot;&#41;;
+     * BlobRequestConditions requestConditions = new BlobRequestConditions&#40;&#41;
+     *     .setLeaseId&#40;leaseId&#41;
+     *     .setIfUnmodifiedSince&#40;OffsetDateTime.now&#40;&#41;.minusDays&#40;3&#41;&#41;;
+     * client.commitBlockListWithResponse&#40;new BlockBlobCommitBlockListOptions&#40;Collections.singletonList&#40;base64BlockID&#41;&#41;
+     *     .setHeaders&#40;headers&#41;.setMetadata&#40;metadata&#41;.setTags&#40;tags&#41;.setTier&#40;AccessTier.HOT&#41;
+     *     .setRequestConditions&#40;requestConditions&#41;&#41;
+     *     .subscribe&#40;response -&gt;
+     *     System.out.printf&#40;&quot;Committing block list completed with status %d%n&quot;, response.getStatusCode&#40;&#41;&#41;&#41;;
+     * </pre>
+     *
+     * @param options {@link BlockBlobCommitBlockListOptions}
+     * @return A reactive response containing the information of the block blob.
+     */
+    public Mono<Response<BlockBlobItem>> commitBlockListWithResponse(BlockBlobCommitBlockListOptions options) {
+        try {
+            return withContext(context -> commitBlockListWithResponse(options, context));
+        } catch (RuntimeException ex) {
+            return monoError(logger, ex);
+        }
+    }
+
+    Mono<Response<BlockBlobItem>> commitBlockListWithResponse(BlockBlobCommitBlockListOptions options,
+        Context context) {
+        StorageImplUtils.assertNotNull("options", options);
+        BlobRequestConditions requestConditions = options.getRequestConditions() == null ? new BlobRequestConditions()
+            : options.getRequestConditions();
+        context = context == null ? Context.NONE : context;
+
+        return this.azureBlobStorage.blockBlobs().commitBlockListWithRestResponseAsync(null, null,
+            new BlockLookupList().setLatest(options.getBase64BlockIds()), null, null, null, options.getMetadata(),
+            requestConditions.getLeaseId(), options.getTier(), requestConditions.getIfModifiedSince(),
+            requestConditions.getIfUnmodifiedSince(), requestConditions.getIfMatch(),
+            requestConditions.getIfNoneMatch(), requestConditions.getTagsConditions(), null,
+            tagsToString(options.getTags()), options.getHeaders(), getCustomerProvidedKey(), encryptionScope,
+            context.addData(AZ_TRACING_NAMESPACE_KEY, STORAGE_TRACING_NAMESPACE_VALUE))
+            .map(rb -> {
+                BlockBlobCommitBlockListHeaders hd = rb.getDeserializedHeaders();
+                BlockBlobItem item = new BlockBlobItem(hd.getETag(), hd.getLastModified(), hd.getContentMD5(),
+                    hd.isServerEncrypted(), hd.getEncryptionKeySha256(), hd.getEncryptionScope(),
+                    hd.getVersionId());
+                return new SimpleResponse<>(rb, item);
+            });
+    }
+}
