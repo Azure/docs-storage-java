@@ -1,0 +1,11 @@
+- name: Reference
+  uid: azure.java.sdk.landingpage.reference
+  landingPageType: Root
+  expanded: false
+  items:
+    # other services go HERE
+  - name: Other
+    uid: azure.java.sdk.landingPage.services.other
+    landingPageType: Service
+    children:
+    - '*'
