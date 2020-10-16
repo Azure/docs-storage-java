@@ -7,6 +7,9 @@
     "npm_package_sources": [
         {
             "name": "@azure/storage-blob"
+        },
+        {
+            "name": "@azure/keyvault-certificates"
         }
     ]
 }
