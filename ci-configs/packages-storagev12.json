@@ -1,0 +1,12 @@
+{
+    "target_repo": {
+      "url": "",
+      "branch": "master",
+      "folder": "./storage-java"
+    },
+    "npm_package_sources": [
+        {
+            "name": "@azure/storage-blob"
+        }
+    ]
+}
