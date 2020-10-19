@@ -94,7 +94,7 @@
           "TopLevelTOC": "docs-ref-mapping/reference-storagev12.yml",
           "ReferenceTOC": "storage-java/storagev12/docs-ref-autogen/toc.yml",
           "ReferenceTOCUrl": "/javascript/sdk/storage/toc.json",
-          "OutputFolder": "storage-java/storagev12/overview",
+          "OutputFolder": "storage-java/storagev12/docs-ref-autogen/overview",
           "HideEmptyNode": false,
           "ContainerPageMetadata": {
               "langs": [
@@ -108,7 +108,7 @@
           "TopLevelTOC": "docs-ref-mapping/reference-storagev10.yml",
           "ReferenceTOC": "storage-java/storagev10/docs-ref-autogen/toc.yml",
           "ReferenceTOCUrl": "/javascript/sdk/storage/toc.json",
-          "OutputFolder": "storage-java/storagev10/overview",
+          "OutputFolder": "storage-java/storagev10/docs-ref-autogen/overview",
           "HideEmptyNode": false,
           "ContainerPageMetadata": {
               "langs": [
