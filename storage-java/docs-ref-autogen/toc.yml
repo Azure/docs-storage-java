@@ -450,6 +450,15 @@
     - uid: '@azure/storage-blob.BlobProperties'
       name: BlobProperties
       items: []
+    - uid: '@azure/storage-blob.BlobQueryArrowConfiguration'
+      name: BlobQueryArrowConfiguration
+      items: []
+    - uid: '@azure/storage-blob.BlobQueryArrowField'
+      name: BlobQueryArrowField
+      items: []
+    - uid: '@azure/storage-blob.BlobQueryArrowFieldType'
+      name: BlobQueryArrowFieldType
+      items: []
     - uid: '@azure/storage-blob.BlobQueryCsvTextConfiguration'
       name: BlobQueryCsvTextConfiguration
       items: []
@@ -747,6 +756,12 @@
     - uid: '@azure/storage-blob.ContainerSetMetadataResponse'
       name: ContainerSetMetadataResponse
       items: []
+    - uid: '@azure/storage-blob.ContainerUndeleteHeaders'
+      name: ContainerUndeleteHeaders
+      items: []
+    - uid: '@azure/storage-blob.ContainerUndeleteResponse'
+      name: ContainerUndeleteResponse
+      items: []
     - uid: '@azure/storage-blob.CopyPollerBlobClient'
       name: CopyPollerBlobClient
       items: []
@@ -987,6 +1002,9 @@
     - uid: '@azure/storage-blob.SASQueryParameters'
       name: SASQueryParameters
       items: []
+    - uid: '@azure/storage-blob.SASQueryParametersOptions'
+      name: SASQueryParametersOptions
+      items: []
     - uid: '@azure/storage-blob.SequenceNumberAccessConditions'
       name: SequenceNumberAccessConditions
       items: []
@@ -1064,6 +1082,9 @@
       items: []
     - uid: '@azure/storage-blob.ServiceSubmitBatchResponseModel'
       name: ServiceSubmitBatchResponseModel
+      items: []
+    - uid: '@azure/storage-blob.ServiceUndeleteContainerOptions'
+      name: ServiceUndeleteContainerOptions
       items: []
     - uid: '@azure/storage-blob.SignedIdentifier'
       name: SignedIdentifier
